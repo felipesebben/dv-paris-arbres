@@ -1,0 +1,16 @@
+# data
+!.gitkeep
+data/raw
+data/processed
+
+# python
+.venv/
+__pycache__/
+
+# env variables
+.env
+
+# duckdb
+*.db
+*.duckdb
+
