@@ -1,6 +1,7 @@
 import duckdb
 import logging
 from pathlib import Path
+import pantab
 
 
 # Let's setup a basic logging to track our script's progress
@@ -38,7 +39,7 @@ class SpatialEngine:
         self.conn.execute("INSTALL spatial;")
         self.conn.execute("LOAD spatial;")
 
-    def merge_and_export(self, filename: str = "trees_final.parquet") -> None:
+    def merge_and_export(self, filename: str = "trees_final.hyper") -> None:
         """
         Extracts the numeric arrondissement ID, joins the trees to the GeoJSON boundaries,
         and exports the final matched dataset.
@@ -53,19 +54,19 @@ class SpatialEngine:
         # 2. Extract the integer from thr tree's arrondissement string.
         # 3. INNER JOIN where extracted integer matches `c_ar` from arrondissements table.
 
-        query = f"""
-            COPY(
+        query = f"""      
                 WITH geo_data AS (
                     SELECT
                         CAST(c_ar AS INTEGER) AS district_id,
                         l_ar AS district_label,
-                        l_aroff AS district_name
+                        l_aroff AS district_name,
+                        CAST(surface AS DOUBLE) AS surface_sqm
                     FROM st_read('{self.geo_path.resolve().as_posix()}')
                 ),
                 tree_data AS (
                     SELECT
                         *,
-                        -- Extract forst sequence of numbers found in the string of arrondissement
+                        -- Extract first sequence of numbers found in the string of arrondissement
                         TRY_CAST(REGEXP_EXTRACT(arrondissement, '\\d+') AS INTEGER) AS extracted_id
                     FROM read_parquet('{self.trees_path.resolve().as_posix()}')
                 )
@@ -81,21 +82,25 @@ class SpatialEngine:
                     t.longitude,
                     g.district_id,
                     g.district_label,
-                    g.district_name
+                    g.district_name,
+                    g.surface_sqm
                 FROM tree_data t
                 INNER JOIN geo_data g ON t.extracted_id = g.district_id
-            ) TO '{output_path.as_posix()}' (FORMAT 'PARQUET');
         """
         try:
-            self.conn.execute(query)
-            logging.info(f"Merge successful! Final dataset saved to {output_path}")
+            # Execute query and convert to Pandas
+            logging.info("Querying DuckDB and converting to DataFrame...")
+            df = self.conn.execute(query).df()
+            
+            # Use pantab to write the DataFrame to a .hyper file
+            logging.info(f"Writing {len(df):,} rows to .hyper format...")
+            pantab.frame_to_hyper(df, output_path.as_posix(), table="paris_trees")
 
-            # Validate drop in tree count
-            final_count = self.conn.execute(f"SELECT COUNT(*) FROM read_parquet('{output_path}')").fetchone()[0]
-            logging.info(f"Trees within the 20 Arrondissements: {final_count:,}")
+            logging.info(f"Success! Final dataset saved to {output_path}")
+
 
         except Exception as e:
-            logging.error(f"Merge failed: {e}")
+            logging.error(f"Merge and export failed: {e}")
             raise
 
 if __name__ == "__main__":
